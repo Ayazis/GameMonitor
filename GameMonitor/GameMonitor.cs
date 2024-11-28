@@ -5,11 +5,13 @@ public class GameMonitor
 {
     readonly Regex regex;
     readonly string windowTitle;
-    IWindowCapturer windowCapturer = new WindowCapturer();
+    IWindowCapturer windowCapturer = new WindowCapturer("Counter-Strike Source");
     IOCRTextExtractor textExtractor = new OCRTextExtractor();
+    readonly ISoundPlayer _soundPlayer;
 
-    public GameMonitor(Regex regex, string windowTitle)
+    public GameMonitor(Regex regex, string windowTitle, ISoundPlayer soundPlayer)
     {
+        this._soundPlayer = soundPlayer;
         this.windowTitle = windowTitle;
         this.regex = regex;
     }
@@ -18,15 +20,21 @@ public class GameMonitor
     {
         try
         {
+            Stopwatch watch = new Stopwatch();
 
             while (true)
             {
+                watch.Start();
+              //  Console.WriteLine("checkking");
+
                 string extractedText = ExtractTextFromGame();
+              //  Console.Clear();
+                //Console.WriteLine(watch.ElapsedMilliseconds);
+
                 var match = regex.Match(extractedText);
 
                 if (match.Success)
                 {
-//                    Console.WriteLine(extractedText.Replace(" ", ""));
 
                     if (match.Groups["terrorists"].Success)
                     {
@@ -36,15 +44,25 @@ public class GameMonitor
                     {
                         CounterTerroristsWin();
                     }
+                    // Log individual groups and their values
+                    foreach (var groupName in match.Groups.Keys)
+                    {
+                        Console.WriteLine($"Group: {groupName}, Value: {match.Groups[groupName].Value}");
+                    }
+                    //Console.WriteLine(extractedText.Replace(" ", ""));
                     Task.Delay(10000).Wait();
                 }
                 else
                 {
-                    Console.Clear();
+                 
                     WriteInProgress();
                 }
 
-                Task.Delay(2000).Wait();
+                watch.Stop();
+                watch.Reset();
+                var timepassed = watch.ElapsedMilliseconds;
+                if (timepassed < 500)
+                    Task.Delay(500 - (int)watch.ElapsedMilliseconds).Wait();
             }
         }
         catch (Exception ex)
@@ -53,18 +71,16 @@ public class GameMonitor
         }
     }
 
-    private static void CounterTerroristsWin()
+    private void CounterTerroristsWin()
     {
         Console.WriteLine("Counter Terrorists win!");
-        SoundPlayer.PlaySound(@"./sounds/Counter Terrorists Win - CS GO - QuickSounds.com.mp3");
-   
-        
+        _soundPlayer.PlayCtWin();
     }
 
-    private static void TerroristsWin()
+    private void TerroristsWin()
     {
         Console.WriteLine("Terrorists win!");
-        SoundPlayer.PlaySound(@"./sounds/Terrorists Win - CS GO - QuickSounds.com.mp3");       
+        _soundPlayer.PlayTwin();
     }
 
     private string ExtractTextFromGame()
@@ -72,10 +88,14 @@ public class GameMonitor
         string extractedText = string.Empty;
 
         // var capturedImage = new Bitmap(new MemoryStream(File.ReadAllBytes("./testimages/Terrorist win.png")));
-        using (var capturedImage = windowCapturer.CaptureWindow(windowTitle))
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+        using (var capturedImage = windowCapturer.CaptureWindow())
         {
             extractedText = textExtractor.ExtractText(capturedImage);
         }
+        Console.WriteLine(stopwatch.ElapsedMilliseconds);   
         return extractedText;
     }
 

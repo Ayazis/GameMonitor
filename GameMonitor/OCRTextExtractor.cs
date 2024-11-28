@@ -1,7 +1,6 @@
-﻿using System.Drawing;
+﻿using System.Diagnostics;
+using System.Drawing;
 using Tesseract;
-// Single Responsibility Principle: Handles window capture
-// Single Responsibility Principle: Handles OCR text extraction
 public interface IOCRTextExtractor
 {
     string ExtractText(Bitmap image);
@@ -11,17 +10,24 @@ public interface IOCRTextExtractor
 
 public class OCRTextExtractor : IOCRTextExtractor
 {
+
+    TesseractEngine _engine;
+    public OCRTextExtractor()
+    {
+        _engine = new TesseractEngine(@"./tessdata", "eng", EngineMode.Default);
+    }
     public string ExtractText(Bitmap image)
     {
-        using (var engine = new TesseractEngine(@"./tessdata", "eng", EngineMode.Default))
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+        using (var pix = PixConverter.ToPix(image))
         {
-            using (var pix = PixConverter.ToPix(image))
-            {
-                using (var page = engine.Process(pix))
-                {
-                    return page.GetText();
-                }
+            using (var page = _engine.Process(pix))
+            {                
+                return page.GetText();
             }
         }
+       
+
     }
 }

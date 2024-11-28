@@ -2,10 +2,22 @@
 using System.Runtime.InteropServices;
 public interface IWindowCapturer
 {
-    Bitmap CaptureWindow(string windowTitle);
+    Bitmap CaptureWindow();
 }
 public class WindowCapturer : IWindowCapturer
 {
+    IntPtr hdcWindow;
+    IntPtr hwnd;
+    public WindowCapturer(string windowTitle)
+    {
+        hwnd = FindWindow(null, windowTitle);
+        if (hwnd == IntPtr.Zero)
+            throw new InvalidOperationException("Window not found.");
+
+        hdcWindow = GetWindowDC(hwnd);
+        if (hdcWindow == IntPtr.Zero)
+            throw new InvalidOperationException("Failed to get device context.");
+    }
     [DllImport("user32.dll")]
     private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
@@ -18,15 +30,9 @@ public class WindowCapturer : IWindowCapturer
     [DllImport("user32.dll")]
     private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
 
-    public Bitmap CaptureWindow(string windowTitle)
+    public Bitmap CaptureWindow()
     {
-        IntPtr hwnd = FindWindow(null, windowTitle);
-        if (hwnd == IntPtr.Zero)
-            throw new InvalidOperationException("Window not found.");
-
-        IntPtr hdcWindow = GetWindowDC(hwnd);
-        if (hdcWindow == IntPtr.Zero)
-            throw new InvalidOperationException("Failed to get device context.");
+      
 
         return CreateImageFromWindow(hwnd, hdcWindow);
 

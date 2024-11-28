@@ -21,13 +21,13 @@ public static string[] TerroristsWinPatterns =
 };
 
     public static Regex Regex = new Regex(
-        $@"(?<terrorists>\b({string.Join("|", TerroristsWinPatterns)})\b)|(?<counterterrorists>\b({string.Join("|", CounterTerroristsWinPatterns)})\b)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase
+        $@"(?<counterterrorists>(?<=^|\s)({string.Join("|", CounterTerroristsWinPatterns.Select(Regex.Escape))})(?=$|\s))|
+            (?<terrorists>(?<=^|\s)({string.Join("|", TerroristsWinPatterns.Select(Regex.Escape))})(?=$|\s))",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace
     );
-
     static void Main(string[] args)
     {
-        var monitor = new GameMonitor(Regex, "Counter-Strike Source");
+        var monitor = new GameMonitor(Regex, "Counter-Strike Source", new SoundPlayer());
 
         monitor.MonitorGame();
     }
