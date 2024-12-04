@@ -5,7 +5,7 @@ public class GameMonitor
 {
     readonly Regex regex;
     readonly string windowTitle;
-    WindowCapturer windowCapturer = new WindowCapturer("Counter-Strike Source");
+    WindowCapturer windowCapturer = new WindowCapturer();
     IOCRTextExtractor textExtractor = new OCRTextExtractor();
     readonly ISoundPlayer _soundPlayer;
 
@@ -28,8 +28,8 @@ public class GameMonitor
               //  Console.WriteLine("checkking");
 
                 string extractedText = ExtractTextFromGame();
-              //  Console.Clear();
-                //Console.WriteLine(watch.ElapsedMilliseconds);
+               // Console.Clear();
+                Console.WriteLine(extractedText);
 
                 var match = regex.Match(extractedText);
 
@@ -92,14 +92,21 @@ public class GameMonitor
         var stopwatch = new Stopwatch();
         stopwatch.Start();
         var capturedImage = windowCapturer.Capture();
-        
-            
-            if (capturedImage == null)
+
+        string capturedir = Path.Join(Directory.GetCurrentDirectory(), "captures");
+        Directory.CreateDirectory(capturedir);
+
+        string filePath = Path.Join(capturedir, DateTime.UtcNow.ToString("hh mm ss") +".png");
+        capturedImage.Save(filePath, System.Drawing.Imaging.ImageFormat.Png);
+
+
+        if (capturedImage == null)
                 return "";
 
             extractedText = textExtractor.ExtractText(capturedImage);
-        
-        Console.WriteLine("extracted image in:"+stopwatch.ElapsedMilliseconds);   
+        Console.WriteLine($"{capturedImage} {extractedText}");
+        Console.WriteLine("extracted image in:"+stopwatch.ElapsedMilliseconds);
+
         return extractedText;
     }
 

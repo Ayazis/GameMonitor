@@ -41,13 +41,15 @@ public class WindowCapturer
     private const int TargetWidth = 1920;     // Fixed target width
     private const int TargetHeight = 1080;    // Fixed target height
 
-    public WindowCapturer(string windowTitle)
+    public WindowCapturer()
     {
         // Retrieve the window handle by title
-        _hwnd = FindWindow(null, windowTitle);
+        _hwnd = FindWindow(null, "Counter-Strike Source");
         if (_hwnd == IntPtr.Zero)
         {
-            throw new InvalidOperationException($"Window with title '{windowTitle}' not found.");
+            _hwnd = FindWindow(null, "Counter-Strike 2");
+            if (_hwnd == IntPtr.Zero)
+                throw new InvalidOperationException($"Window not found.");
         }
 
         InitializeDimensionsAndScaling();    // Cache dimensions and scaling

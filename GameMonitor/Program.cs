@@ -4,6 +4,7 @@ public class Program
 {
     public static string[] CounterTerroristsWinPatterns =
 {
+        "ROUND LOST",
         "TS ELIMINATED",
         "TERRORISTS ELIMINATED",
         "BOMB DEFUSED",
@@ -12,6 +13,7 @@ public class Program
 };
 public static string[] TerroristsWinPatterns =
     {
+        "ROUND WON",
         "CTS ELIMINATED",
         "COUNTER-TERRORISTS ELIMINATED",
         "BOMB DETONATED",
@@ -27,7 +29,7 @@ public static string[] TerroristsWinPatterns =
     );
     static void Main(string[] args)
     {
-        var monitor = new GameMonitor(Regex, "Counter-Strike Source", new SoundPlayer());
+        var monitor = new GameMonitor(Regex, "Counter-Strike 2", new SoundPlayer());
 
         monitor.MonitorGame();
     }
