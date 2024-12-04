@@ -27,10 +27,8 @@ public class GameMonitor
                 watch.Start();
               //  Console.WriteLine("checkking");
 
-                string extractedText = ExtractTextFromGame();
-               // Console.Clear();
-                Console.WriteLine(extractedText);
-
+                string extractedText = ExtractTextFromGame();            
+                
                 var match = regex.Match(extractedText);
 
                 if (match.Success)
@@ -104,7 +102,7 @@ public class GameMonitor
                 return "";
 
             extractedText = textExtractor.ExtractText(capturedImage);
-        Console.WriteLine($"{capturedImage} {extractedText}");
+       // Console.WriteLine($"{capturedImage} {extractedText}");
         Console.WriteLine("extracted image in:"+stopwatch.ElapsedMilliseconds);
 
         return extractedText;

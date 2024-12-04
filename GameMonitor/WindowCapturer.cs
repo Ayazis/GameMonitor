@@ -2,23 +2,214 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
+using SharpDX;
+using SharpDX.Direct3D11;
+using SharpDX.DXGI;
+using System.Linq;
 
 public class WindowCapturer
 {
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetDC(IntPtr hwnd);
+    private const int TargetWidth = 1920;
+    private const int TargetHeight = 1080;
+    private Bitmap _cachedBitmap;
+    private Graphics _graphics;
+    private Texture2D _currentTexture;
+    private SharpDX.Direct3D11.Device _device;
+    private OutputDuplication _deskDupl;
+    private IntPtr _windowHandle;
+    private string _windowTitle;
+    private float _dpiScaling;
 
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+    public WindowCapturer()
+    {
+        _windowHandle = FindWindow(null, "Counter-Strike Source");
+        if (_windowHandle == IntPtr.Zero)
+        {
+            _windowHandle = FindWindow(null, "Counter-Strike 2");
+            if (_windowHandle == IntPtr.Zero)
+                throw new ArgumentException("Window not found.");
+        }
 
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+        _dpiScaling = GetDpiScalingForMonitor(_windowHandle);
 
-    [DllImport("gdi32.dll")]
-    private static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int width, int height, IntPtr hdcSrc, int xSrc, int ySrc, CopyPixelOperation rop);
+        _cachedBitmap = new Bitmap(TargetWidth, TargetHeight, PixelFormat.Format32bppArgb);
+        _graphics = Graphics.FromImage(_cachedBitmap);
+        _graphics.Clear(Color.Black);
+        InitializeCapture();
+    }
+
+    private void InitializeCapture()
+    {
+        var factory = new Factory1();
+        var adapter = factory.Adapters.First();
+        _device = new SharpDX.Direct3D11.Device(adapter);
+
+        // Create output duplication for the desktop
+        var output = adapter.Outputs.First();
+        var output1 = output.QueryInterface<Output1>();
+        _deskDupl = output1.DuplicateOutput(_device);
+    }
+
+    public Bitmap Capture()
+    {
+        Bitmap bitmap = null;
+        if (_deskDupl == null)
+        {
+            throw new InvalidOperationException("No valid duplication interface available.");
+        }
+
+        RECT windowRect;
+        if (!GetClientRect(_windowHandle, out windowRect))
+        {
+            throw new InvalidOperationException("Failed to get client rectangle.");
+        }
+
+        POINT topLeft = new POINT { x = 0, y = 0 };
+        if (!ClientToScreen(_windowHandle, ref topLeft))
+        {
+            throw new InvalidOperationException("Failed to convert client coordinates to screen coordinates.");
+        }
+
+        // Calculate the window's absolute position and size, applying DPI scaling correctly
+        int windowLeft = topLeft.x;
+        int windowTop = topLeft.y;
+        int windowWidth = windowRect.Right - windowRect.Left;
+        int windowHeight = windowRect.Bottom - windowRect.Top;
+
+        float currentDpiScaling = GetDpiScalingForMonitor(_windowHandle);
+        windowLeft = (int)(windowLeft * currentDpiScaling);
+        windowTop = (int)(windowTop * currentDpiScaling);
+        windowWidth = (int)(windowWidth * currentDpiScaling);
+        windowHeight = (int)(windowHeight * currentDpiScaling);
+
+        try
+        {
+            OutputDuplicateFrameInformation frameInfo;
+            SharpDX.DXGI.Resource desktopResource;
+            _deskDupl.TryAcquireNextFrame(500, out frameInfo, out desktopResource);
+
+            using (desktopResource)
+            using (var tempTexture = desktopResource.QueryInterface<Texture2D>())
+            {
+                // Copy resource into CPU accessible texture
+                var textureDesc = tempTexture.Description;
+                textureDesc.Usage = ResourceUsage.Staging;
+                textureDesc.BindFlags = BindFlags.None;
+                textureDesc.CpuAccessFlags = CpuAccessFlags.Read;
+                textureDesc.OptionFlags = ResourceOptionFlags.None;
+
+                _currentTexture = new Texture2D(_device, textureDesc);
+                _device.ImmediateContext.CopyResource(tempTexture, _currentTexture);
+
+                // Map the resource to access pixel data
+                var dataBox = _device.ImmediateContext.MapSubresource(_currentTexture, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+                try
+                {
+                    using (var dataStream = new DataStream(dataBox.DataPointer, _currentTexture.Description.Height * dataBox.RowPitch, true, false))
+                    {
+                        // Create Bitmap from the data stream
+                        using (Bitmap fullScreenBitmap = new Bitmap(_currentTexture.Description.Width, _currentTexture.Description.Height, dataBox.RowPitch, PixelFormat.Format32bppArgb, dataStream.DataPointer))
+                        {
+                            // Make sure windowWidth and windowHeight do not exceed the full screen bitmap dimensions
+                            windowWidth = Math.Min(windowWidth, fullScreenBitmap.Width - windowLeft);
+                            windowHeight = Math.Min(windowHeight, fullScreenBitmap.Height - windowTop);
+
+                            // Use Graphics to efficiently crop the game window area
+                            bitmap = new Bitmap(windowWidth, windowHeight, PixelFormat.Format32bppArgb);
+                            using (Graphics graphics = Graphics.FromImage(bitmap))
+                            {
+                                graphics.DrawImage(fullScreenBitmap, new Rectangle(0, 0, windowWidth, windowHeight), windowLeft, windowTop, windowWidth, windowHeight, GraphicsUnit.Pixel);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    // Unmap the resource
+                    _device.ImmediateContext.UnmapSubresource(_currentTexture, 0);
+                }
+            }
+
+            using (Graphics g = Graphics.FromImage(_cachedBitmap))
+            {
+                g.DrawImage(bitmap, 0, 0, TargetWidth, TargetHeight);
+            }
+
+            _deskDupl.ReleaseFrame();
+            return _cachedBitmap;
+        }
+        catch (SharpDXException ex)
+        {
+            throw new InvalidOperationException("Failed to capture frame: " + ex.Message);
+        }
+        finally
+        {
+            bitmap?.Dispose();
+            _currentTexture?.Dispose();
+        }
+    }
+
+    public void Save(string filePath)
+    {
+        if (_cachedBitmap == null)
+        {
+            throw new InvalidOperationException("No captured bitmap available.");
+        }
+
+        try
+        {
+            _cachedBitmap.Save(filePath, ImageFormat.Png);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException || ex is System.IO.IOException)
+        {
+            throw new InvalidOperationException("Failed to save the file: " + ex.Message);
+        }
+    }
+
+    ~WindowCapturer()
+    {
+        _graphics?.Dispose();
+        _cachedBitmap?.Dispose();
+        _deskDupl?.Dispose();
+        _device?.Dispose();
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetClientRect(IntPtr hwnd, out RECT lpRect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ClientToScreen(IntPtr hwnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("gdi32.dll")]
+    private static extern int GetDeviceCaps(IntPtr hdc, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    private float GetDpiScalingForMonitor(IntPtr hwnd)
+    {
+        // Get monitor associated with the window handle
+        IntPtr monitor = MonitorFromWindow(hwnd, 2 /*MONITOR_DEFAULTTONEAREST*/);
+
+        // Get DPI for the monitor
+        uint dpiX, dpiY;
+        GetDpiForMonitor(monitor, 0 /*MDT_EFFECTIVE_DPI*/, out dpiX, out dpiY);
+
+        return dpiX / 96.0f; // 96 is the default DPI
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr hmonitor, uint dpiType, out uint dpiX, out uint dpiY);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
@@ -29,116 +220,10 @@ public class WindowCapturer
         public int Bottom;
     }
 
-    private readonly IntPtr _hwnd;            // Window handle
-    private Bitmap _tempBitmap;              // Temporary bitmap for raw capture
-    private Bitmap _finalBitmap;             // Final output bitmap (800x600)
-    private int _originalWidth;              // Original window width
-    private int _originalHeight;             // Original window height
-    private float _aspectRatio;              // Cached aspect ratio
-    private int _scaledWidth;                // Cached scaled width
-    private int _scaledHeight;               // Cached scaled height
-
-    private const int TargetWidth = 1920;     // Fixed target width
-    private const int TargetHeight = 1080;    // Fixed target height
-
-    public WindowCapturer()
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
     {
-        // Retrieve the window handle by title
-        _hwnd = FindWindow(null, "Counter-Strike Source");
-        if (_hwnd == IntPtr.Zero)
-        {
-            _hwnd = FindWindow(null, "Counter-Strike 2");
-            if (_hwnd == IntPtr.Zero)
-                throw new InvalidOperationException($"Window not found.");
-        }
-
-        InitializeDimensionsAndScaling();    // Cache dimensions and scaling
-        InitializeBitmaps();                 // Preallocate reusable bitmaps
-    }
-
-    private void InitializeDimensionsAndScaling()
-    {
-        // Retrieve window dimensions only once unless window is resized
-        RECT rect;
-        if (!GetWindowRect(_hwnd, out rect))
-        {
-            throw new InvalidOperationException("Failed to get window dimensions.");
-        }
-
-        _originalWidth = rect.Right - rect.Left;
-        _originalHeight = rect.Bottom - rect.Top;
-        _aspectRatio = (float)_originalWidth / _originalHeight;
-
-        // Precompute scaled dimensions while maintaining aspect ratio
-        if (_aspectRatio >= 1) // Landscape or square
-        {
-            _scaledWidth = TargetWidth;
-            _scaledHeight = (int)(TargetWidth / _aspectRatio);
-        }
-        else // Portrait (unlikely, but handle gracefully)
-        {
-            _scaledHeight = TargetHeight;
-            _scaledWidth = (int)(TargetHeight * _aspectRatio);
-        }
-    }
-
-    private void InitializeBitmaps()
-    {
-        // Allocate temporary bitmap for raw capture
-        if (_tempBitmap == null || _tempBitmap.Width != _originalWidth || _tempBitmap.Height != _originalHeight)
-        {
-            _tempBitmap?.Dispose();
-            _tempBitmap = new Bitmap(_originalWidth, _originalHeight, PixelFormat.Format32bppArgb);
-        }
-
-        // Allocate final bitmap for scaled output
-        if (_finalBitmap == null || _finalBitmap.Width != TargetWidth || _finalBitmap.Height != TargetHeight)
-        {
-            _finalBitmap?.Dispose();
-            _finalBitmap = new Bitmap(TargetWidth, TargetHeight, PixelFormat.Format32bppArgb);
-        }
-    }
-
-    public Bitmap Capture()
-    {
-        // Capture the window content into the temporary bitmap
-        using (Graphics gTemp = Graphics.FromImage(_tempBitmap))
-        {
-            IntPtr hdcTemp = gTemp.GetHdc();
-            IntPtr hdcWindow = GetDC(_hwnd);
-
-            if (!BitBlt(hdcTemp, 0, 0, _originalWidth, _originalHeight, hdcWindow, 0, 0, CopyPixelOperation.SourceCopy))
-            {
-                ReleaseDC(_hwnd, hdcWindow);
-                gTemp.ReleaseHdc(hdcTemp);
-                throw new InvalidOperationException("Failed to capture the window content.");
-            }
-
-            ReleaseDC(_hwnd, hdcWindow);
-            gTemp.ReleaseHdc(hdcTemp);
-        }
-
-        // Scale the temporary bitmap into the final bitmap while maintaining aspect ratio
-        using (Graphics gFinal = Graphics.FromImage(_finalBitmap))
-        {
-            gFinal.Clear(Color.Black); // Fill any blank space
-            gFinal.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            gFinal.DrawImage(_tempBitmap,
-                (TargetWidth - _scaledWidth) / 2,
-                (TargetHeight - _scaledHeight) / 2,
-                _scaledWidth,
-                _scaledHeight);
-        }
-
-        return _finalBitmap;
-    }
-
-    public void Dispose()
-    {
-        // Clean up bitmaps
-        _tempBitmap?.Dispose();
-        _finalBitmap?.Dispose();
-        _tempBitmap = null;
-        _finalBitmap = null;
+        public int x;
+        public int y;
     }
 }
