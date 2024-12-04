@@ -5,7 +5,7 @@ public class GameMonitor
 {
     readonly Regex regex;
     readonly string windowTitle;
-    IWindowCapturer windowCapturer = new WindowCapturer("Counter-Strike Source");
+    WindowCapturer windowCapturer = new WindowCapturer("Counter-Strike Source");
     IOCRTextExtractor textExtractor = new OCRTextExtractor();
     readonly ISoundPlayer _soundPlayer;
 
@@ -91,11 +91,15 @@ public class GameMonitor
 
         var stopwatch = new Stopwatch();
         stopwatch.Start();
-        using (var capturedImage = windowCapturer.CaptureWindow())
-        {
+        var capturedImage = windowCapturer.Capture();
+        
+            
+            if (capturedImage == null)
+                return "";
+
             extractedText = textExtractor.ExtractText(capturedImage);
-        }
-        Console.WriteLine(stopwatch.ElapsedMilliseconds);   
+        
+        Console.WriteLine("extracted image in:"+stopwatch.ElapsedMilliseconds);   
         return extractedText;
     }
 
