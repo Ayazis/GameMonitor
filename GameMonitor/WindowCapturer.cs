@@ -2,24 +2,40 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
-using System.Threading;
 using SharpDX;
-using SharpDX.Direct3D11;
+using Device = SharpDX.Direct3D11.Device;
 using SharpDX.DXGI;
+using SharpDX.Direct3D11;
 using System.Linq;
+using EasyHook;
+using SharpDX.Direct3D;
 
 public class WindowCapturer
 {
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     private const int TargetWidth = 1920;
     private const int TargetHeight = 1080;
-    private Bitmap _cachedBitmap;
-    private Graphics _graphics;
-    private Texture2D _currentTexture;
-    private SharpDX.Direct3D11.Device _device;
-    private OutputDuplication _deskDupl;
+    private static Bitmap _cachedBitmap;
     private IntPtr _windowHandle;
     private string _windowTitle;
-    private float _dpiScaling;
+    private Device _device;
+    private SwapChain _swapChain;
+    private Texture2D _stagingTexture;
+    private DeviceContext _context;
+    private static IDXGISwapChain_PresentDelegate _presentDelegate;
+    private static LocalHook _hook;
+    private static bool _captureNextFrame = false;
 
     public WindowCapturer()
     {
@@ -31,123 +47,115 @@ public class WindowCapturer
                 throw new ArgumentException("Window not found.");
         }
 
-        _dpiScaling = GetDpiScalingForMonitor(_windowHandle);
-
-        _cachedBitmap = new Bitmap(TargetWidth, TargetHeight, PixelFormat.Format32bppArgb);
-        _graphics = Graphics.FromImage(_cachedBitmap);
-        _graphics.Clear(Color.Black);
-        InitializeCapture();
+        InitializeDirectX();
+        HookPresentMethod();
     }
 
-    private void InitializeCapture()
+    private void InitializeDirectX()
     {
-        var factory = new Factory1();
-        var adapter = factory.Adapters.First();
-        _device = new SharpDX.Direct3D11.Device(adapter);
+        var swapChainDescription = new SwapChainDescription()
+        {
+            BufferCount = 1,
+            ModeDescription = new ModeDescription(TargetWidth, TargetHeight, new Rational(60, 1), Format.R8G8B8A8_UNorm),
+            IsWindowed = true,
+            OutputHandle = _windowHandle,
+            SampleDescription = new SampleDescription(1, 0),
+            SwapEffect = SwapEffect.Discard,
+            Usage = Usage.RenderTargetOutput
+        };
 
-        // Create output duplication for the desktop
-        var output = adapter.Outputs.First();
-        var output1 = output.QueryInterface<Output1>();
-        _deskDupl = output1.DuplicateOutput(_device);
+        Device.CreateWithSwapChain(DriverType.Hardware, DeviceCreationFlags.BgraSupport, swapChainDescription, out _device, out _swapChain);
+        _context = _device.ImmediateContext;
+
+        var textureDesc = new Texture2DDescription
+        {
+            CpuAccessFlags = CpuAccessFlags.Read,
+            BindFlags = BindFlags.None,
+            Format = Format.B8G8R8A8_UNorm,
+            Width = TargetWidth,
+            Height = TargetHeight,
+            ArraySize = 1,
+            MipLevels = 1,
+            OptionFlags = ResourceOptionFlags.None,
+            Usage = ResourceUsage.Staging,
+            SampleDescription = new SampleDescription(1, 0)
+        };
+
+        _stagingTexture = new Texture2D(_device, textureDesc);
+    }
+
+    private void HookPresentMethod()
+    {
+        IntPtr presentAddress = Marshal.GetFunctionPointerForDelegate((IDXGISwapChain_PresentDelegate)PresentHooked);
+        _hook = LocalHook.Create(presentAddress, new IDXGISwapChain_PresentDelegate(PresentHooked), this);
+        _hook.ThreadACL.SetExclusiveACL(new int[] { 0 });
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int IDXGISwapChain_PresentDelegate(IntPtr swapChainPtr, uint syncInterval, uint flags);
+
+    private static int PresentHooked(IntPtr swapChainPtr, uint syncInterval, uint flags)
+    {
+        try
+        {
+            if (_captureNextFrame)
+            {
+                var swapChain = new SwapChain(swapChainPtr);
+                using (var backBuffer = swapChain.GetBackBuffer<Texture2D>(0))
+                {
+                    var device = backBuffer.Device;
+                    var context = device.ImmediateContext;
+
+                    // Copy the back buffer to a staging texture
+                    var textureDesc = backBuffer.Description;
+                    textureDesc.Usage = ResourceUsage.Staging;
+                    textureDesc.CpuAccessFlags = CpuAccessFlags.Read;
+                    textureDesc.BindFlags = BindFlags.None;
+
+                    using (var stagingTexture = new Texture2D(device, textureDesc))
+                    {
+                        context.CopyResource(backBuffer, stagingTexture);
+                        var dataBox = context.MapSubresource(stagingTexture, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+
+                        Bitmap bitmap = new Bitmap(textureDesc.Width, textureDesc.Height, PixelFormat.Format32bppArgb);
+                        var bitmapData = bitmap.LockBits(new System.Drawing.Rectangle(0, 0, textureDesc.Width, textureDesc.Height), ImageLockMode.WriteOnly, bitmap.PixelFormat);
+                        Utilities.CopyMemory(bitmapData.Scan0, dataBox.DataPointer, textureDesc.Height * dataBox.RowPitch);
+                        bitmap.UnlockBits(bitmapData);
+
+                        // Store the captured bitmap
+                        _cachedBitmap = bitmap;
+
+                        context.UnmapSubresource(stagingTexture, 0);
+                    }
+                }
+                _captureNextFrame = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error in Present Hook: " + ex.Message);
+        }
+
+        // Call original Present function
+        return _presentDelegate(swapChainPtr, syncInterval, flags);
     }
 
     public Bitmap Capture()
     {
-        Bitmap bitmap = null;
-        if (_deskDupl == null)
+        _captureNextFrame = true;
+
+        // Wait for the next frame to be captured
+        while (_captureNextFrame)
         {
-            throw new InvalidOperationException("No valid duplication interface available.");
+            // Busy wait, could be improved with proper signaling or timeout
         }
 
-        RECT windowRect;
-        if (!GetClientRect(_windowHandle, out windowRect))
+        if (_cachedBitmap == null)
         {
-            throw new InvalidOperationException("Failed to get client rectangle.");
+            throw new InvalidOperationException("Failed to capture the frame.");
         }
 
-        POINT topLeft = new POINT { x = 0, y = 0 };
-        if (!ClientToScreen(_windowHandle, ref topLeft))
-        {
-            throw new InvalidOperationException("Failed to convert client coordinates to screen coordinates.");
-        }
-
-        // Calculate the window's absolute position and size, applying DPI scaling correctly
-        int windowLeft = topLeft.x;
-        int windowTop = topLeft.y;
-        int windowWidth = windowRect.Right - windowRect.Left;
-        int windowHeight = windowRect.Bottom - windowRect.Top;
-
-        float currentDpiScaling = GetDpiScalingForMonitor(_windowHandle);
-        windowLeft = (int)(windowLeft * currentDpiScaling);
-        windowTop = (int)(windowTop * currentDpiScaling);
-        windowWidth = (int)(windowWidth * currentDpiScaling);
-        windowHeight = (int)(windowHeight * currentDpiScaling);
-
-        try
-        {
-            OutputDuplicateFrameInformation frameInfo;
-            SharpDX.DXGI.Resource desktopResource;
-            _deskDupl.TryAcquireNextFrame(500, out frameInfo, out desktopResource);
-
-            using (desktopResource)
-            using (var tempTexture = desktopResource.QueryInterface<Texture2D>())
-            {
-                // Copy resource into CPU accessible texture
-                var textureDesc = tempTexture.Description;
-                textureDesc.Usage = ResourceUsage.Staging;
-                textureDesc.BindFlags = BindFlags.None;
-                textureDesc.CpuAccessFlags = CpuAccessFlags.Read;
-                textureDesc.OptionFlags = ResourceOptionFlags.None;
-
-                _currentTexture = new Texture2D(_device, textureDesc);
-                _device.ImmediateContext.CopyResource(tempTexture, _currentTexture);
-
-                // Map the resource to access pixel data
-                var dataBox = _device.ImmediateContext.MapSubresource(_currentTexture, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
-                try
-                {
-                    using (var dataStream = new DataStream(dataBox.DataPointer, _currentTexture.Description.Height * dataBox.RowPitch, true, false))
-                    {
-                        // Create Bitmap from the data stream
-                        using (Bitmap fullScreenBitmap = new Bitmap(_currentTexture.Description.Width, _currentTexture.Description.Height, dataBox.RowPitch, PixelFormat.Format32bppArgb, dataStream.DataPointer))
-                        {
-                            // Make sure windowWidth and windowHeight do not exceed the full screen bitmap dimensions
-                            windowWidth = Math.Min(windowWidth, fullScreenBitmap.Width - windowLeft);
-                            windowHeight = Math.Min(windowHeight, fullScreenBitmap.Height - windowTop);
-
-                            // Use Graphics to efficiently crop the game window area
-                            bitmap = new Bitmap(windowWidth, windowHeight, PixelFormat.Format32bppArgb);
-                            using (Graphics graphics = Graphics.FromImage(bitmap))
-                            {
-                                graphics.DrawImage(fullScreenBitmap, new Rectangle(0, 0, windowWidth, windowHeight), windowLeft, windowTop, windowWidth, windowHeight, GraphicsUnit.Pixel);
-                            }
-                        }
-                    }
-                }
-                finally
-                {
-                    // Unmap the resource
-                    _device.ImmediateContext.UnmapSubresource(_currentTexture, 0);
-                }
-            }
-
-            using (Graphics g = Graphics.FromImage(_cachedBitmap))
-            {
-                g.DrawImage(bitmap, 0, 0, TargetWidth, TargetHeight);
-            }
-
-            _deskDupl.ReleaseFrame();
-            return _cachedBitmap;
-        }
-        catch (SharpDXException ex)
-        {
-            throw new InvalidOperationException("Failed to capture frame: " + ex.Message);
-        }
-        finally
-        {
-            bitmap?.Dispose();
-            _currentTexture?.Dispose();
-        }
+        return (Bitmap)_cachedBitmap.Clone();
     }
 
     public void Save(string filePath)
@@ -169,61 +177,10 @@ public class WindowCapturer
 
     ~WindowCapturer()
     {
-        _graphics?.Dispose();
         _cachedBitmap?.Dispose();
-        _deskDupl?.Dispose();
+        _stagingTexture?.Dispose();
+        _swapChain?.Dispose();
+        _context?.Dispose();
         _device?.Dispose();
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool GetClientRect(IntPtr hwnd, out RECT lpRect);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool ClientToScreen(IntPtr hwnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetDC(IntPtr hWnd);
-
-    [DllImport("gdi32.dll")]
-    private static extern int GetDeviceCaps(IntPtr hdc, int nIndex);
-
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
-
-    private float GetDpiScalingForMonitor(IntPtr hwnd)
-    {
-        // Get monitor associated with the window handle
-        IntPtr monitor = MonitorFromWindow(hwnd, 2 /*MONITOR_DEFAULTTONEAREST*/);
-
-        // Get DPI for the monitor
-        uint dpiX, dpiY;
-        GetDpiForMonitor(monitor, 0 /*MDT_EFFECTIVE_DPI*/, out dpiX, out dpiY);
-
-        return dpiX / 96.0f; // 96 is the default DPI
-    }
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
-
-    [DllImport("shcore.dll")]
-    private static extern int GetDpiForMonitor(IntPtr hmonitor, uint dpiType, out uint dpiX, out uint dpiY);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int x;
-        public int y;
     }
 }
