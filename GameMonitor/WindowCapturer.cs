@@ -3,32 +3,23 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using SharpDX;
-using Device = SharpDX.Direct3D11.Device;
-using SharpDX.DXGI;
 using SharpDX.Direct3D11;
-using System.Linq;
+using SharpDX.DXGI;
+using System.Threading;
+using System.Threading.Tasks;
 using EasyHook;
 using SharpDX.Direct3D;
+using Device = SharpDX.Direct3D11.Device;
 
-public class WindowCapturer
+public class WindowCapturer : IDisposable
 {
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
 
     private const int TargetWidth = 1920;
     private const int TargetHeight = 1080;
     private static Bitmap _cachedBitmap;
     private IntPtr _windowHandle;
-    private string _windowTitle;
     private Device _device;
     private SwapChain _swapChain;
     private Texture2D _stagingTexture;
@@ -36,15 +27,14 @@ public class WindowCapturer
     private static IDXGISwapChain_PresentDelegate _presentDelegate;
     private static LocalHook _hook;
     private static bool _captureNextFrame = false;
+    private ManualResetEventSlim _frameCaptured = new ManualResetEventSlim(false);
 
-    public WindowCapturer()
+    public WindowCapturer(string windowTitle)
     {
-        _windowHandle = FindWindow(null, "Counter-Strike Source");
+        _windowHandle = FindWindow(null, windowTitle);
         if (_windowHandle == IntPtr.Zero)
         {
-            _windowHandle = FindWindow(null, "Counter-Strike 2");
-            if (_windowHandle == IntPtr.Zero)
-                throw new ArgumentException("Window not found.");
+            throw new ArgumentException("Window not found: " + windowTitle);
         }
 
         InitializeDirectX();
@@ -94,8 +84,9 @@ public class WindowCapturer
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int IDXGISwapChain_PresentDelegate(IntPtr swapChainPtr, uint syncInterval, uint flags);
 
-    private static int PresentHooked(IntPtr swapChainPtr, uint syncInterval, uint flags)
+    private int PresentHooked(IntPtr swapChainPtr, uint syncInterval, uint flags)
     {
+        Console.WriteLine("Hook executing");
         try
         {
             if (_captureNextFrame)
@@ -129,6 +120,7 @@ public class WindowCapturer
                     }
                 }
                 _captureNextFrame = false;
+                _frameCaptured.Set(); // Signal the waiting thread
             }
         }
         catch (Exception ex)
@@ -140,14 +132,24 @@ public class WindowCapturer
         return _presentDelegate(swapChainPtr, syncInterval, flags);
     }
 
-    public Bitmap Capture()
+    public async Task<Bitmap> CaptureAsync()
     {
         _captureNextFrame = true;
+        _frameCaptured.Reset(); // Reset the signal before waiting
 
-        // Wait for the next frame to be captured
-        while (_captureNextFrame)
+        int retryCount = 0;
+        while (!_frameCaptured.Wait(1000)) // Retry with a timeout after 1000 ms
         {
-            // Busy wait, could be improved with proper signaling or timeout
+            if (++retryCount >= 3)
+            {
+                Console.WriteLine("Capture retry limit reached.");
+                return null; // Return null instead of throwing an exception
+            }
+            Console.WriteLine("Retrying capture...");
+            _captureNextFrame = true;
+
+            // Yield the thread to allow asynchronous operations
+            await Task.Delay(100);
         }
 
         if (_cachedBitmap == null)
@@ -158,7 +160,7 @@ public class WindowCapturer
         return (Bitmap)_cachedBitmap.Clone();
     }
 
-    public void Save(string filePath)
+    public async Task SaveAsync(string filePath)
     {
         if (_cachedBitmap == null)
         {
@@ -167,7 +169,7 @@ public class WindowCapturer
 
         try
         {
-            _cachedBitmap.Save(filePath, ImageFormat.Png);
+            await Task.Run(() => _cachedBitmap.Save(filePath, ImageFormat.Png));
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException || ex is System.IO.IOException)
         {
@@ -175,12 +177,13 @@ public class WindowCapturer
         }
     }
 
-    ~WindowCapturer()
+    public void Dispose()
     {
         _cachedBitmap?.Dispose();
         _stagingTexture?.Dispose();
         _swapChain?.Dispose();
         _context?.Dispose();
         _device?.Dispose();
+        _hook?.Dispose();
     }
 }

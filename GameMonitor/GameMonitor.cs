@@ -5,7 +5,7 @@ public class GameMonitor
 {
     readonly Regex regex;
     readonly string windowTitle;
-    WindowCapturer windowCapturer = new WindowCapturer();
+    WindowCapturer windowCapturer;
     IOCRTextExtractor textExtractor = new OCRTextExtractor();
     readonly ISoundPlayer _soundPlayer;
 
@@ -14,9 +14,10 @@ public class GameMonitor
         this._soundPlayer = soundPlayer;
         this.windowTitle = windowTitle;
         this.regex = regex;
+        windowCapturer = new WindowCapturer("Counter-Strike 2");
     }
 
-    public void MonitorGame()
+    public async Task MonitorGameAsync()
     {
         try
         {
@@ -27,7 +28,7 @@ public class GameMonitor
                 watch.Start();
               //  Console.WriteLine("checkking");
 
-                string extractedText = ExtractTextFromGame();            
+                string extractedText = await ExtractTextFromGameAsync();            
                 
                 var match = regex.Match(extractedText);
 
@@ -81,7 +82,7 @@ public class GameMonitor
         _soundPlayer.PlayTwin();
     }
 
-    private string ExtractTextFromGame()
+    private async Task<string> ExtractTextFromGameAsync()
     {
         string extractedText = string.Empty;
 
@@ -89,7 +90,9 @@ public class GameMonitor
 
         var stopwatch = new Stopwatch();
         stopwatch.Start();
-        var capturedImage = windowCapturer.Capture();
+        var capturedImage =  await windowCapturer.CaptureAsync();
+        if (capturedImage == null)
+            return "-no image-";
 
         string capturedir = Path.Join(Directory.GetCurrentDirectory(), "captures");
         Directory.CreateDirectory(capturedir);

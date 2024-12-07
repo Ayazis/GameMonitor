@@ -39,4 +39,22 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <NativeLibs Remove="EasyHook64.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="EasyHook64.dll" />
+    <None Remove="EasyHook64.lib" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="EasyHook64.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </EmbeddedResource>
+    <EmbeddedResource Include="EasyHook64.lib">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>

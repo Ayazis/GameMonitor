@@ -27,10 +27,10 @@ public static string[] TerroristsWinPatterns =
             (?<terrorists>(?<=^|\s)({string.Join("|", TerroristsWinPatterns.Select(Regex.Escape))})(?=$|\s))",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace
     );
-    static void Main(string[] args)
+    static async Task Main (string[] args)
     {
-        var monitor = new GameMonitor(Regex, "Counter-Strike 2", new SoundPlayer());
+        var monitor = new GameMonitor(Regex, "Anno 1800", new SoundPlayer());
 
-        monitor.MonitorGame();
+        await monitor.MonitorGameAsync();
     }
 }
